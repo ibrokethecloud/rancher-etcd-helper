@@ -1,0 +1,45 @@
+#cloud-config
+output: { all : '| tee -a /var/log/cloud-init-output.log' }
+hostname: rancher
+write_files:
+    - path: "/etc/startup.sh"
+      owner: root:root
+      permissions: '0755'
+      content: |
+        #!/bin/sh
+
+        # Custom script contents of which can be used with cloud-init to bootstrap a rancher server
+        # from an existing backup or create a new instance and setup the etcd helper to backup
+        # the service
+        docker pull gmehta3/rancher-etcd-helper:latest
+        docker pull  rancher/rancher:latest
+        ## See if a backup exists to restore ##
+        echo "Running restore services"
+        docker run -v /var/lib/rancher:/var/lib/rancher \
+            -v /backup:/backup \
+            -v /etc/kubernetes:/etc/kubernetes \
+            gmehta3/rancher-etcd-helper:latest sh -x /restore.sh
+
+        sleep 60
+
+        ## Boot up rancher master ##
+        echo "Booting rancher"
+        docker run -it --restart=always --name=rancher-server -p 80:80 -p 443:443 -d -v /var/lib/rancher:/var/lib/rancher \
+            -v /etc/kubernetes:/etc/kubernetes \
+            rancher/rancher:latest
+
+
+        sleep 60
+
+        echo "Booting sidekick to snapshot rancher etcd"
+        ## Boot up etcd-helper to snapshot etcd cluster ##
+        docker run -it --restart=always --net=container:rancher-server -d -v /backup:/backup \
+            -v /etc/kubernetes:/etc/kubernetes \
+            -e TZ="AEST-10AEDT,M10.1.0,M4.1.0/3" \
+            gmehta3/rancher-etcd-helper:latest
+
+runcmd:
+  - sudo mkdir -p /backup
+  - echo "${backup_path}:/ /backup nfs4 nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,local_lock=none 0 0" >> /etc/fstab
+  - mount -a
+  - sudo /etc/startup.sh >> /tmp/startup.log
